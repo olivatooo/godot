@@ -108,12 +108,20 @@ void RendererCanvasCull::_render_canvas_item_tree(RID p_to_render_target, Canvas
 	}
 }
 
+// A canvas item that draws nothing and has nothing under it (audio players, collision shapes,
+// navigation obstacles, bare bodies: most of a busy scene) produces no render output, yet every
+// frame it was culled and, under a y-sorted parent, flattened and sorted too. Skipping it changes
+// nothing on screen.
+static _FORCE_INLINE_ bool _is_empty_canvas_leaf(const RendererCanvasCull::Item *p_item) {
+	return p_item->commands == nullptr && p_item->child_items.is_empty() && p_item->canvas_group == nullptr && p_item->visibility_notifier == nullptr && p_item->copy_back_buffer == nullptr && !p_item->clip && !p_item->repeat_source;
+}
+
 void RendererCanvasCull::_collect_ysort_children(RendererCanvasCull::Item *p_canvas_item, RendererCanvasCull::Item *p_material_owner, const Color &p_modulate, RendererCanvasCull::Item **r_items, int &r_index, int &r_ysort_children_count, int p_z, uint32_t p_canvas_cull_mask) {
 	int child_item_count = p_canvas_item->child_items.size();
 	RendererCanvasCull::Item **child_items = p_canvas_item->child_items.ptrw();
 	for (int i = 0; i < child_item_count; i++) {
 		if (child_items[i]->visible) {
-			if (child_items[i]->visibility_layer & p_canvas_cull_mask) {
+			if ((child_items[i]->visibility_layer & p_canvas_cull_mask) && !_is_empty_canvas_leaf(child_items[i])) {
 				// To y-sort according to the item's final position, physics interpolation
 				// and transform snapping need to be applied before y-sorting.
 				Transform2D child_xform;
@@ -304,7 +312,7 @@ void RendererCanvasCull::_attach_canvas_item_for_draw(RendererCanvasCull::Item *
 void RendererCanvasCull::_cull_canvas_item(Item *p_canvas_item, const Transform2D &p_parent_xform, const Rect2 &p_clip_rect, const Color &p_modulate, int p_z, RendererCanvasRender::Item **r_z_list, RendererCanvasRender::Item **r_z_last_list, Item *p_canvas_clip, Item *p_material_owner, bool p_is_already_y_sorted, uint32_t p_canvas_cull_mask, const Point2 &p_repeat_size, int p_repeat_times, RendererCanvasRender::Item *p_repeat_source_item) {
 	Item *ci = p_canvas_item;
 
-	if (!ci->visible) {
+	if (!ci->visible || _is_empty_canvas_leaf(ci)) {
 		return;
 	}
 

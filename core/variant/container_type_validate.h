@@ -100,7 +100,7 @@ private:
 			}
 		}
 #else
-		Object *object = p_variant;
+		Object *object = p_variant.get_validated_object();
 		if (object == nullptr) {
 			return true; //fine
 		}

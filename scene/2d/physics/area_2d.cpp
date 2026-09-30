@@ -522,7 +522,16 @@ bool Area2D::overlaps_body(RequiredParam<Node> rp_body) const {
 	return E->value.in_tree;
 }
 
+SafeNumeric<uint32_t> Area2D::audio_bus_override_count;
+
 void Area2D::set_audio_bus_override(bool p_override) {
+	if (p_override != audio_bus_override) {
+		if (p_override) {
+			audio_bus_override_count.increment();
+		} else {
+			audio_bus_override_count.decrement();
+		}
+	}
 	audio_bus_override = p_override;
 }
 
@@ -691,4 +700,7 @@ Area2D::Area2D() :
 }
 
 Area2D::~Area2D() {
+	if (audio_bus_override) {
+		audio_bus_override_count.decrement();
+	}
 }

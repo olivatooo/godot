@@ -388,6 +388,29 @@ private:
 	// Properties.
 	HashMap<Vector2i, CellData> tile_map_layer_data;
 
+#ifndef PHYSICS_2D_DISABLED
+	// Cell ownership index for physics hit resolution. Physics quadrants merge tile polygons, so a
+	// collision no longer identifies a tile; these resolve a point/segment/circle back to the cells
+	// whose own collision polygons cover it. Built lazily, kept current from the dirty-cell pass.
+	struct HitPolygon {
+		Vector<Vector2> points;
+		Rect2 aabb;
+		uint32_t collision_layer = 0;
+	};
+	struct HitOwner {
+		LocalVector<HitPolygon> polygons;
+		Rect2i covered;
+	};
+	bool hit_index_built = false;
+	HashMap<Vector2i, HitOwner> hit_owners;
+	HashMap<Vector2i, LocalVector<Vector2i>> hit_grid;
+	void _hit_index_ensure();
+	void _hit_index_add(const Vector2i &p_coords);
+	void _hit_index_remove(const Vector2i &p_coords);
+	void _hit_index_update_dirty(bool p_force_cleanup);
+	void _hit_candidates_in_rect(const Rect2 &p_rect, HashSet<Vector2i> &r_owners) const;
+#endif // PHYSICS_2D_DISABLED
+
 	bool enabled = true;
 	Ref<TileSet> tile_set;
 
@@ -584,11 +607,16 @@ public:
 	// --- Physics helpers ---
 	bool has_body_rid(RID p_physics_body) const;
 	Vector2i get_coords_for_body_rid(RID p_physics_body) const; // For finding tiles from collision.
+	TypedArray<Vector2i> get_physics_cells_at_point(const Vector2 &p_local_point, uint32_t p_collision_mask);
+	TypedArray<Vector2i> get_physics_cells_along_segment(const Vector2 &p_local_from, const Vector2 &p_local_to, uint32_t p_collision_mask);
+	TypedArray<Vector2i> get_physics_cells_in_circle(const Vector2 &p_local_center, real_t p_radius, uint32_t p_collision_mask);
+	TypedArray<Vector2i> get_physics_cells_in_rect(const Rect2 &p_local_rect, uint32_t p_collision_mask);
 #endif // PHYSICS_2D_DISABLED
 
 	// --- Runtime ---
 	void update_internals();
 	void notify_runtime_tile_data_update();
+	void notify_runtime_tile_data_update_cell(const Vector2i &p_coords);
 	GDVIRTUAL1R(bool, _use_tile_data_runtime_update, Vector2i);
 	GDVIRTUAL2(_tile_data_runtime_update, Vector2i, TileData *);
 	GDVIRTUAL2(_update_cells, TypedArray<Vector2i>, bool);

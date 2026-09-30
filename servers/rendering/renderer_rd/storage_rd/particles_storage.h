@@ -233,6 +233,10 @@ private:
 		bool interpolate = true;
 		bool fractional_delta = false;
 		double frame_remainder = 0;
+		bool processed_since_copy = true;
+		RID last_copy_uniform_set;
+		RID last_copy_trail_uniform_set;
+		uint8_t last_copy_push_constant[128] = {};
 		real_t collision_base_size = 0.01;
 
 		uint32_t instance_motion_vectors_current_offset = 0;

@@ -2080,6 +2080,10 @@ void TileMapLayer::_internal_update(bool p_force_cleanup) {
 
 	_clear_runtime_update_tile_data();
 
+#ifndef PHYSICS_2D_DISABLED
+	_hit_index_update_dirty(p_force_cleanup);
+#endif // PHYSICS_2D_DISABLED
+
 	// Clear the "what is dirty" flags.
 	for (int i = 0; i < DIRTY_FLAGS_MAX; i++) {
 		dirty.flags[i] = false;
@@ -2214,11 +2218,16 @@ void TileMapLayer::_bind_methods() {
 	// --- Physics helpers ---
 	ClassDB::bind_method(D_METHOD("has_body_rid", "body"), &TileMapLayer::has_body_rid);
 	ClassDB::bind_method(D_METHOD("get_coords_for_body_rid", "body"), &TileMapLayer::get_coords_for_body_rid);
+	ClassDB::bind_method(D_METHOD("get_physics_cells_at_point", "local_point", "collision_mask"), &TileMapLayer::get_physics_cells_at_point);
+	ClassDB::bind_method(D_METHOD("get_physics_cells_along_segment", "local_from", "local_to", "collision_mask"), &TileMapLayer::get_physics_cells_along_segment);
+	ClassDB::bind_method(D_METHOD("get_physics_cells_in_circle", "local_center", "radius", "collision_mask"), &TileMapLayer::get_physics_cells_in_circle);
+	ClassDB::bind_method(D_METHOD("get_physics_cells_in_rect", "local_rect", "collision_mask"), &TileMapLayer::get_physics_cells_in_rect);
 #endif // PHYSICS_2D_DISABLED
 
 	// --- Runtime ---
 	ClassDB::bind_method(D_METHOD("update_internals"), &TileMapLayer::update_internals);
 	ClassDB::bind_method(D_METHOD("notify_runtime_tile_data_update"), &TileMapLayer::notify_runtime_tile_data_update);
+	ClassDB::bind_method(D_METHOD("notify_runtime_tile_data_update_cell", "coords"), &TileMapLayer::notify_runtime_tile_data_update_cell);
 
 	// --- Shortcuts to methods defined in TileSet ---
 	ClassDB::bind_method(D_METHOD("map_pattern", "position_in_tilemap", "coords_in_pattern", "pattern"), &TileMapLayer::map_pattern);
@@ -3124,6 +3133,298 @@ Vector2i TileMapLayer::get_coords_for_body_rid(RID p_physics_body) const {
 	ERR_FAIL_NULL_V(found, Vector2i());
 	return *found;
 }
+
+void TileMapLayer::_hit_index_add(const Vector2i &p_coords) {
+	if (tile_set.is_null()) {
+		return;
+	}
+	const CellData *cell_data = tile_map_layer_data.getptr(p_coords);
+	if (!cell_data || cell_data->cell.source_id == TileSet::INVALID_SOURCE) {
+		return;
+	}
+	TileSetAtlasSource *atlas_source = Object::cast_to<TileSetAtlasSource>(tile_set->get_source(cell_data->cell.source_id).ptr());
+	if (!atlas_source || !atlas_source->has_tile(cell_data->cell.get_atlas_coords())) {
+		return;
+	}
+	const TileData *tile_data = atlas_source->get_tile_data(cell_data->cell.get_atlas_coords(), cell_data->cell.alternative_tile);
+	if (!tile_data) {
+		return;
+	}
+	bool flip_h = (cell_data->cell.alternative_tile & TileSetAtlasSource::TRANSFORM_FLIP_H);
+	bool flip_v = (cell_data->cell.alternative_tile & TileSetAtlasSource::TRANSFORM_FLIP_V);
+	bool transpose = (cell_data->cell.alternative_tile & TileSetAtlasSource::TRANSFORM_TRANSPOSE);
+	Vector2 origin = tile_set->map_to_local(p_coords);
+
+	HitOwner owner;
+	Rect2 total;
+	bool has_total = false;
+	for (int layer = 0; layer < tile_set->get_physics_layers_count(); layer++) {
+		uint32_t collision_layer = tile_set->get_physics_layer_collision_layer(layer);
+		for (int polygon_index = 0; polygon_index < tile_data->get_collision_polygons_count(layer); polygon_index++) {
+			int shapes_count = tile_data->get_collision_polygon_shapes_count(layer, polygon_index);
+			for (int shape_index = 0; shape_index < shapes_count; shape_index++) {
+				Ref<ConvexPolygonShape2D> shape = tile_data->get_collision_polygon_shape(layer, polygon_index, shape_index, flip_h, flip_v, transpose);
+				if (shape.is_null() || shape->get_points().size() < 3) {
+					continue;
+				}
+				HitPolygon polygon;
+				polygon.points = shape->get_points();
+				for (int i = 0; i < polygon.points.size(); i++) {
+					polygon.points.set(i, polygon.points[i] + origin);
+				}
+				polygon.aabb = Rect2(polygon.points[0], Vector2());
+				for (int i = 1; i < polygon.points.size(); i++) {
+					polygon.aabb.expand_to(polygon.points[i]);
+				}
+				polygon.collision_layer = collision_layer;
+				total = has_total ? total.merge(polygon.aabb) : polygon.aabb;
+				has_total = true;
+				owner.polygons.push_back(polygon);
+			}
+		}
+	}
+	if (!has_total) {
+		return;
+	}
+	Vector2i from = tile_set->local_to_map(total.position);
+	Vector2i to = tile_set->local_to_map(total.get_end());
+	owner.covered = Rect2i(from, to - from + Vector2i(1, 1));
+	for (int y = from.y; y <= to.y; y++) {
+		for (int x = from.x; x <= to.x; x++) {
+			Vector2i grid(x, y);
+			LocalVector<Vector2i> *list = hit_grid.getptr(grid);
+			if (!list) {
+				list = &hit_grid.insert(grid, LocalVector<Vector2i>())->value;
+			}
+			list->push_back(p_coords);
+		}
+	}
+	hit_owners.insert(p_coords, owner);
+}
+
+void TileMapLayer::_hit_index_remove(const Vector2i &p_coords) {
+	HitOwner *owner = hit_owners.getptr(p_coords);
+	if (!owner) {
+		return;
+	}
+	const Rect2i covered = owner->covered;
+	for (int y = covered.position.y; y < covered.get_end().y; y++) {
+		for (int x = covered.position.x; x < covered.get_end().x; x++) {
+			LocalVector<Vector2i> *list = hit_grid.getptr(Vector2i(x, y));
+			if (!list) {
+				continue;
+			}
+			list->erase(p_coords);
+			if (list->is_empty()) {
+				hit_grid.erase(Vector2i(x, y));
+			}
+		}
+	}
+	hit_owners.erase(p_coords);
+}
+
+void TileMapLayer::_hit_index_ensure() {
+	if (hit_index_built) {
+		return;
+	}
+	hit_owners.clear();
+	hit_grid.clear();
+	for (const KeyValue<Vector2i, CellData> &kv : tile_map_layer_data) {
+		_hit_index_add(kv.key);
+	}
+	hit_index_built = true;
+}
+
+void TileMapLayer::_hit_index_update_dirty(bool p_force_cleanup) {
+	if (!hit_index_built) {
+		return;
+	}
+	if (p_force_cleanup || dirty.flags[DIRTY_FLAGS_TILE_SET]) {
+		hit_index_built = false;
+		hit_owners.clear();
+		hit_grid.clear();
+		return;
+	}
+	for (SelfList<CellData> *cell_data_list_element = dirty.cell_list.first(); cell_data_list_element; cell_data_list_element = cell_data_list_element->next()) {
+		const Vector2i coords = cell_data_list_element->self()->coords;
+		_hit_index_remove(coords);
+		_hit_index_add(coords);
+	}
+}
+
+void TileMapLayer::_hit_candidates_in_rect(const Rect2 &p_rect, HashSet<Vector2i> &r_owners) const {
+	if (tile_set.is_null()) {
+		return;
+	}
+	Vector2i from = tile_set->local_to_map(p_rect.position);
+	Vector2i to = tile_set->local_to_map(p_rect.get_end());
+	for (int y = MIN(from.y, to.y); y <= MAX(from.y, to.y); y++) {
+		for (int x = MIN(from.x, to.x); x <= MAX(from.x, to.x); x++) {
+			const LocalVector<Vector2i> *list = hit_grid.getptr(Vector2i(x, y));
+			if (!list) {
+				continue;
+			}
+			for (const Vector2i &owner : *list) {
+				r_owners.insert(owner);
+			}
+		}
+	}
+}
+
+// Cyrus-Beck: parametric entry of segment a->b into a convex polygon (either winding).
+static bool _hit_segment_convex_entry(const Vector<Vector2> &p_poly, const Vector2 &p_a, const Vector2 &p_b, real_t &r_t) {
+	const int n = p_poly.size();
+	real_t area = 0;
+	for (int i = 0; i < n; i++) {
+		area += p_poly[i].cross(p_poly[(i + 1) % n]);
+	}
+	const real_t sign = area >= 0 ? 1.0 : -1.0;
+	const Vector2 d = p_b - p_a;
+	real_t t0 = 0;
+	real_t t1 = 1;
+	for (int i = 0; i < n; i++) {
+		const Vector2 p0 = p_poly[i];
+		const Vector2 e = p_poly[(i + 1) % n] - p0;
+		const Vector2 outward = Vector2(e.y, -e.x) * sign;
+		const real_t num = outward.dot(p0 - p_a);
+		const real_t den = outward.dot(d);
+		if (Math::is_zero_approx(den)) {
+			if (num < 0) {
+				return false;
+			}
+			continue;
+		}
+		const real_t t = num / den;
+		if (den > 0) {
+			t1 = MIN(t1, t);
+		} else {
+			t0 = MAX(t0, t);
+		}
+		if (t0 > t1) {
+			return false;
+		}
+	}
+	r_t = t0;
+	return true;
+}
+
+TypedArray<Vector2i> TileMapLayer::get_physics_cells_at_point(const Vector2 &p_local_point, uint32_t p_collision_mask) {
+	TypedArray<Vector2i> result;
+	_hit_index_ensure();
+	HashSet<Vector2i> owners;
+	_hit_candidates_in_rect(Rect2(p_local_point, Vector2()), owners);
+	for (const Vector2i &coords : owners) {
+		const HitOwner *owner = hit_owners.getptr(coords);
+		for (const HitPolygon &polygon : owner->polygons) {
+			if ((polygon.collision_layer & p_collision_mask) && polygon.aabb.grow(FP_ADJUST).has_point(p_local_point) && Geometry2D::is_point_in_polygon(p_local_point, polygon.points)) {
+				result.push_back(coords);
+				break;
+			}
+		}
+	}
+	return result;
+}
+
+TypedArray<Vector2i> TileMapLayer::get_physics_cells_along_segment(const Vector2 &p_local_from, const Vector2 &p_local_to, uint32_t p_collision_mask) {
+	TypedArray<Vector2i> result;
+	_hit_index_ensure();
+	Rect2 bounds(p_local_from, Vector2());
+	bounds.expand_to(p_local_to);
+	HashSet<Vector2i> owners;
+	_hit_candidates_in_rect(bounds, owners);
+	LocalVector<Pair<real_t, Vector2i>> hits;
+	for (const Vector2i &coords : owners) {
+		const HitOwner *owner = hit_owners.getptr(coords);
+		real_t best = 2;
+		for (const HitPolygon &polygon : owner->polygons) {
+			if (!(polygon.collision_layer & p_collision_mask) || !polygon.aabb.grow(FP_ADJUST).intersects(bounds.grow(FP_ADJUST))) {
+				continue;
+			}
+			real_t t;
+			if (_hit_segment_convex_entry(polygon.points, p_local_from, p_local_to, t)) {
+				best = MIN(best, t);
+			}
+		}
+		if (best <= 1) {
+			hits.push_back(Pair<real_t, Vector2i>(best, coords));
+		}
+	}
+	hits.sort_custom<PairSort<real_t, Vector2i>>();
+	for (const Pair<real_t, Vector2i> &hit : hits) {
+		result.push_back(hit.second);
+	}
+	return result;
+}
+
+// Separating-axis test between a convex polygon and an axis-aligned rect.
+static bool _hit_convex_overlaps_rect(const Vector<Vector2> &p_poly, const Rect2 &p_rect) {
+	const Vector2 corners[4] = { p_rect.position, Vector2(p_rect.get_end().x, p_rect.position.y), p_rect.get_end(), Vector2(p_rect.position.x, p_rect.get_end().y) };
+	const int n = p_poly.size();
+	for (int i = 0; i < n; i++) {
+		const Vector2 e = p_poly[(i + 1) % n] - p_poly[i];
+		const Vector2 axis(-e.y, e.x);
+		real_t pmin = 1e30, pmax = -1e30, rmin = 1e30, rmax = -1e30;
+		for (int j = 0; j < n; j++) {
+			const real_t d = axis.dot(p_poly[j]);
+			pmin = MIN(pmin, d);
+			pmax = MAX(pmax, d);
+		}
+		for (int j = 0; j < 4; j++) {
+			const real_t d = axis.dot(corners[j]);
+			rmin = MIN(rmin, d);
+			rmax = MAX(rmax, d);
+		}
+		if (pmax < rmin || rmax < pmin) {
+			return false;
+		}
+	}
+	return true;
+}
+
+TypedArray<Vector2i> TileMapLayer::get_physics_cells_in_rect(const Rect2 &p_local_rect, uint32_t p_collision_mask) {
+	TypedArray<Vector2i> result;
+	_hit_index_ensure();
+	const Rect2 rect = p_local_rect.abs();
+	HashSet<Vector2i> owners;
+	_hit_candidates_in_rect(rect, owners);
+	for (const Vector2i &coords : owners) {
+		const HitOwner *owner = hit_owners.getptr(coords);
+		for (const HitPolygon &polygon : owner->polygons) {
+			if ((polygon.collision_layer & p_collision_mask) && polygon.aabb.intersects(rect) && _hit_convex_overlaps_rect(polygon.points, rect)) {
+				result.push_back(coords);
+				break;
+			}
+		}
+	}
+	return result;
+}
+
+TypedArray<Vector2i> TileMapLayer::get_physics_cells_in_circle(const Vector2 &p_local_center, real_t p_radius, uint32_t p_collision_mask) {
+	TypedArray<Vector2i> result;
+	_hit_index_ensure();
+	const Rect2 bounds = Rect2(p_local_center, Vector2()).grow(p_radius);
+	HashSet<Vector2i> owners;
+	_hit_candidates_in_rect(bounds, owners);
+	const real_t radius_sq = p_radius * p_radius;
+	for (const Vector2i &coords : owners) {
+		const HitOwner *owner = hit_owners.getptr(coords);
+		for (const HitPolygon &polygon : owner->polygons) {
+			if (!(polygon.collision_layer & p_collision_mask) || !polygon.aabb.intersects(bounds)) {
+				continue;
+			}
+			bool touches = Geometry2D::is_point_in_polygon(p_local_center, polygon.points);
+			for (int i = 0; !touches && i < polygon.points.size(); i++) {
+				const Vector2 closest = Geometry2D::get_closest_point_to_segment(p_local_center, polygon.points[i], polygon.points[(i + 1) % polygon.points.size()]);
+				touches = closest.distance_squared_to(p_local_center) <= radius_sq;
+			}
+			if (touches) {
+				result.push_back(coords);
+				break;
+			}
+		}
+	}
+	return result;
+}
 #endif // PHYSICS_2D_DISABLED
 
 void TileMapLayer::update_internals() {
@@ -3132,6 +3433,19 @@ void TileMapLayer::update_internals() {
 
 void TileMapLayer::notify_runtime_tile_data_update() {
 	dirty.flags[TileMapLayer::DIRTY_FLAGS_LAYER_RUNTIME_UPDATE] = true;
+	_queue_internal_update();
+	emit_signal(CoreStringName(changed));
+}
+
+// Re-runs the runtime tile data callbacks for one cell only, instead of every cell in the layer.
+void TileMapLayer::notify_runtime_tile_data_update_cell(const Vector2i &p_coords) {
+	HashMap<Vector2i, CellData>::Iterator E = tile_map_layer_data.find(p_coords);
+	if (!E) {
+		return;
+	}
+	if (!E->value.dirty_list_element.in_list()) {
+		dirty.cell_list.add(&(E->value.dirty_list_element));
+	}
 	_queue_internal_update();
 	emit_signal(CoreStringName(changed));
 }

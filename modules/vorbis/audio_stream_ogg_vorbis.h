@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/os/mutex.h"
 #include "core/variant/variant.h"
 #include "servers/audio/audio_stream.h"
 
@@ -38,6 +39,20 @@
 #include <vorbis/codec.h>
 
 class AudioStreamOggVorbis;
+
+// Parsed Vorbis headers plus decode codebooks (libvorbis builds them into vorbis_info on the first
+// vorbis_synthesis_init). Shared by every playback of one stream so starting a sound no longer
+// re-parses the setup header and rebuilds the codebooks. Read-only once built.
+class OggVorbisSetup : public RefCounted {
+	GDSOFTCLASS(OggVorbisSetup, RefCounted);
+
+public:
+	vorbis_info info;
+	bool valid = false;
+
+	OggVorbisSetup() { vorbis_info_init(&info); }
+	~OggVorbisSetup() { vorbis_info_clear(&info); }
+};
 
 class AudioStreamPlaybackOggVorbis : public AudioStreamPlaybackResampled {
 	GDCLASS(AudioStreamPlaybackOggVorbis, AudioStreamPlaybackResampled);
@@ -54,13 +69,10 @@ class AudioStreamPlaybackOggVorbis : public AudioStreamPlaybackResampled {
 	AudioFrame loop_fade[FADE_SIZE];
 	int loop_fade_remaining = FADE_SIZE;
 
-	vorbis_info info;
-	vorbis_comment comment;
+	Ref<OggVorbisSetup> setup;
 	vorbis_dsp_state dsp_state;
 	vorbis_block block;
 
-	bool info_is_allocated = false;
-	bool comment_is_allocated = false;
 	bool dsp_state_is_allocated = false;
 	bool block_is_allocated = false;
 
@@ -127,6 +139,10 @@ class AudioStreamOggVorbis : public AudioStream {
 	// Performs a seek to the beginning of the stream, should not be called during playback!
 	// Also causes allocation and deallocation.
 	void maybe_update_info();
+
+	Ref<OggVorbisSetup> shared_setup;
+	Mutex shared_setup_mutex;
+	Ref<OggVorbisSetup> _get_shared_setup();
 
 	Ref<OggPacketSequence> packet_sequence;
 

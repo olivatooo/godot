@@ -34,6 +34,7 @@
 
 #include "x11/key_mapping_x11.h"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/input/input.h"
 #include "core/io/file_access.h"
@@ -644,6 +645,7 @@ bool DisplayServerX11::mouse_is_mode_override_enabled() const {
 
 void DisplayServerX11::warp_mouse(const Point2i &p_position) {
 	_THREAD_SAFE_METHOD_
+	mouse_position_cache_frame = UINT64_MAX;
 
 	if (mouse_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED) {
 		last_mouse_pos = p_position;
@@ -659,6 +661,17 @@ void DisplayServerX11::warp_mouse(const Point2i &p_position) {
 }
 
 Point2i DisplayServerX11::mouse_get_position() const {
+	// Two X server round-trips per call; games poll this several times per frame.
+	const uint64_t frame = Engine::get_singleton()->get_process_frames();
+	if (mouse_position_cache_frame == frame) {
+		return mouse_position_cache;
+	}
+	mouse_position_cache_frame = frame;
+	mouse_position_cache = _mouse_get_position_uncached();
+	return mouse_position_cache;
+}
+
+Point2i DisplayServerX11::_mouse_get_position_uncached() const {
 	int number_of_screens = XScreenCount(x11_display);
 	for (int i = 0; i < number_of_screens; i++) {
 		Window root, child;

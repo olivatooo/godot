@@ -91,6 +91,11 @@ class NavigationAgent2D : public Node {
 	bool velocity_forced_submitted = false;
 
 	bool target_position_submitted = false;
+	bool repath_requested = false;
+	uint64_t update_cache_frame = UINT64_MAX;
+	Vector2 update_cache_origin;
+	uint64_t empty_path_query_msec = 0;
+	uint64_t deviation_query_msec = 0;
 
 	bool target_reached = false;
 	bool navigation_finished = true;

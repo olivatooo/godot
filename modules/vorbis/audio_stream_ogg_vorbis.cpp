@@ -175,7 +175,7 @@ int AudioStreamPlaybackOggVorbis::_mix_frames_vorbis(AudioFrame *p_buffer, int p
 		have_samples_left = false;
 	}
 
-	if (info.channels > 1) {
+	if (setup->info.channels > 1) {
 		for (int frame = 0; frame < frames; frame++) {
 			p_buffer[frame].left = pcm[0][frame];
 			p_buffer[frame].right = pcm[1][frame];
@@ -195,28 +195,23 @@ float AudioStreamPlaybackOggVorbis::get_stream_sampling_rate() {
 }
 
 bool AudioStreamPlaybackOggVorbis::_alloc_vorbis() {
-	vorbis_info_init(&info);
-	info_is_allocated = true;
-	vorbis_comment_init(&comment);
-	comment_is_allocated = true;
-
 	ERR_FAIL_COND_V(vorbis_data.is_null(), false);
+	setup = vorbis_stream->_get_shared_setup();
+	ERR_FAIL_COND_V(setup.is_null() || !setup->valid, false);
 	vorbis_data_playback = vorbis_data->instantiate_playback();
 
 	ogg_packet *packet;
 	int err;
 
+	// The headers are already parsed into the shared setup; just step past them.
 	for (int i = 0; i < 3; i++) {
 		if (!vorbis_data_playback->next_ogg_packet(&packet)) {
 			WARN_PRINT("Not enough packets to parse header");
 			return false;
 		}
-
-		err = vorbis_synthesis_headerin(&info, &comment, packet);
-		ERR_FAIL_COND_V_MSG(err != 0, false, "Error parsing header");
 	}
 
-	err = vorbis_synthesis_init(&dsp_state, &info);
+	err = vorbis_synthesis_init(&dsp_state, &setup->info);
 	ERR_FAIL_COND_V_MSG(err != 0, false, "Error initializing dsp state");
 	dsp_state_is_allocated = true;
 
@@ -402,12 +397,6 @@ AudioStreamPlaybackOggVorbis::~AudioStreamPlaybackOggVorbis() {
 	if (dsp_state_is_allocated) {
 		vorbis_dsp_clear(&dsp_state);
 	}
-	if (comment_is_allocated) {
-		vorbis_comment_clear(&comment);
-	}
-	if (info_is_allocated) {
-		vorbis_info_clear(&info);
-	}
 }
 
 Ref<AudioStreamPlayback> AudioStreamOggVorbis::instantiate_playback() {
@@ -488,7 +477,42 @@ void AudioStreamOggVorbis::maybe_update_info() {
 	vorbis_info_clear(&info);
 }
 
+Ref<OggVorbisSetup> AudioStreamOggVorbis::_get_shared_setup() {
+	MutexLock lock(shared_setup_mutex);
+	if (shared_setup.is_valid()) {
+		return shared_setup;
+	}
+	ERR_FAIL_COND_V(packet_sequence.is_null(), Ref<OggVorbisSetup>());
+	Ref<OggVorbisSetup> built;
+	built.instantiate();
+	vorbis_comment comment;
+	vorbis_comment_init(&comment);
+	Ref<OggPacketSequencePlayback> headers = packet_sequence->instantiate_playback();
+	bool parsed = true;
+	for (int i = 0; i < 3; i++) {
+		ogg_packet *packet;
+		if (!headers->next_ogg_packet(&packet) || vorbis_synthesis_headerin(&built->info, &comment, packet) != 0) {
+			parsed = false;
+			break;
+		}
+	}
+	vorbis_comment_clear(&comment);
+	ERR_FAIL_COND_V_MSG(!parsed, Ref<OggVorbisSetup>(), "Error parsing Ogg Vorbis headers.");
+	// Builds ci->fullbooks inside the shared info, so later playbacks skip it.
+	vorbis_dsp_state warm;
+	if (vorbis_synthesis_init(&warm, &built->info) == 0) {
+		vorbis_dsp_clear(&warm);
+		built->valid = true;
+	}
+	shared_setup = built;
+	return shared_setup;
+}
+
 void AudioStreamOggVorbis::set_packet_sequence(Ref<OggPacketSequence> p_packet_sequence) {
+	{
+		MutexLock lock(shared_setup_mutex);
+		shared_setup.unref();
+	}
 	packet_sequence = p_packet_sequence;
 	if (packet_sequence.is_valid()) {
 		maybe_update_info();

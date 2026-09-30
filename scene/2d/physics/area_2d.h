@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "core/templates/safe_refcount.h"
+
 #include "core/templates/vset.h"
 #include "scene/2d/physics/collision_object_2d.h"
 
@@ -189,6 +191,8 @@ public:
 	bool overlaps_body(RequiredParam<Node> rp_body) const;
 
 	void set_audio_bus_override(bool p_override);
+	// Areas with audio_bus_override on; AudioStreamPlayer2D skips its per-step point query at 0.
+	static SafeNumeric<uint32_t> audio_bus_override_count;
 	bool is_overriding_audio_bus() const;
 
 	void set_audio_bus_name(const StringName &p_audio_bus);

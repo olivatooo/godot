@@ -30,7 +30,9 @@
 
 #include "navigation_agent_2d.h"
 
+#include "core/config/engine.h"
 #include "core/math/geometry_2d.h"
+#include "core/os/os.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "scene/2d/navigation/navigation_link_2d.h"
@@ -746,12 +748,25 @@ void NavigationAgent2D::_update_navigation() {
 
 	Vector2 origin = agent_parent->get_global_position();
 
+	// is_navigation_finished / get_next_path_position / the physics tick each run this; with the
+	// same origin in the same frame the result cannot change.
+	const uint64_t frame = Engine::get_singleton()->get_process_frames();
+	if (!repath_requested && update_cache_frame == frame && update_cache_origin == origin) {
+		return;
+	}
+	update_cache_frame = frame;
+	update_cache_origin = origin;
+
 	bool reload_path = false;
 
 	if (NavigationServer2D::get_singleton()->agent_is_map_changed(agent)) {
 		reload_path = true;
 	} else if (navigation_result->get_path().is_empty()) {
-		reload_path = true;
+		// An unreachable target leaves the path empty; retry it at a bounded rate instead of every call.
+		const uint64_t now = OS::get_singleton()->get_ticks_msec();
+		if (repath_requested || now - empty_path_query_msec >= 100) {
+			reload_path = true;
+		}
 	} else {
 		// Check if too far from the navigation path
 		if (navigation_path_index > 0) {
@@ -761,8 +776,13 @@ void NavigationAgent2D::_update_navigation() {
 			const Vector2 segment_b = navigation_path[navigation_path_index];
 			Vector2 p = Geometry2D::get_closest_point_to_segment(origin, segment_a, segment_b);
 			if (origin.distance_to(p) >= path_max_distance) {
-				// To faraway, reload path
-				reload_path = true;
+				// Too far away, reload path - at a bounded rate: crowds that keep being pushed off
+				// their path re-queried it on every call.
+				const uint64_t now = OS::get_singleton()->get_ticks_msec();
+				if (now - deviation_query_msec >= 200) {
+					deviation_query_msec = now;
+					reload_path = true;
+				}
 			}
 		}
 	}
@@ -780,6 +800,8 @@ void NavigationAgent2D::_update_navigation() {
 		}
 
 		NavigationServer2D::get_singleton()->query_path(navigation_query, navigation_result);
+		repath_requested = false;
+		empty_path_query_msec = OS::get_singleton()->get_ticks_msec();
 #ifdef DEBUG_ENABLED
 		debug_path_dirty = true;
 #endif // DEBUG_ENABLED
@@ -833,6 +855,7 @@ void NavigationAgent2D::_advance_waypoints(const Vector2 &p_origin) {
 }
 
 void NavigationAgent2D::_request_repath() {
+	repath_requested = true;
 	navigation_result->reset();
 	target_reached = false;
 	navigation_finished = false;

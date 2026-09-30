@@ -103,6 +103,8 @@ private:
 		Vector<Node *> physics_nodes;
 		bool node_order_dirty = true;
 		bool physics_node_order_dirty = true;
+		uint32_t nodes_sorted = 0;
+		uint32_t physics_nodes_sorted = 0;
 		bool removed = false;
 		Node *owner = nullptr;
 		uint64_t last_pass = 0;

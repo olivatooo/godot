@@ -783,6 +783,7 @@ void ParticlesStorage::particles_set_canvas_sdf_collision(RID p_particles, bool 
 }
 
 void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta) {
+	p_particles->processed_since_copy = true;
 	TextureStorage *texture_storage = TextureStorage::get_singleton();
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 
@@ -1644,6 +1645,8 @@ void ParticlesStorage::update_particles() {
 		if (particles->draw_order != RSE::PARTICLES_DRAW_ORDER_VIEW_DEPTH && particles->transform_align != RSE::PARTICLES_TRANSFORM_ALIGN_Z_BILLBOARD && particles->transform_align != RSE::PARTICLES_TRANSFORM_ALIGN_Z_BILLBOARD_Y_TO_VELOCITY && particles->transform_align != RSE::PARTICLES_TRANSFORM_ALIGN_LOCAL_BILLBOARD) {
 			//does not need view dependent operation, do copy here
 			ParticlesShader::CopyPushConstant copy_push_constant;
+			static_assert(sizeof(ParticlesShader::CopyPushConstant) == sizeof(Particles::last_copy_push_constant));
+			memset(&copy_push_constant, 0, sizeof(copy_push_constant));
 
 			// Affect 2D only.
 			if (particles->use_local_coords) {
@@ -1707,8 +1710,19 @@ void ParticlesStorage::update_particles() {
 			copy_push_constant.lifetime_reverse = particles->draw_order == RSE::PARTICLES_DRAW_ORDER_REVERSE_LIFETIME;
 			copy_push_constant.motion_vectors_current_offset = particles->instance_motion_vectors_current_offset;
 
-			RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 			copy_push_constant.copy_mode_2d = particles->mode == RSE::PARTICLES_MODE_2D ? 1 : 0;
+
+			// Nothing simulated and the copy inputs are unchanged (e.g. a fixed_fps system between
+			// steps with interpolation off, or a paused one): the instance buffer already holds this result.
+			if (!particles->processed_since_copy && !uses_motion_vectors && particles->last_copy_uniform_set == particles->particles_copy_uniform_set && particles->last_copy_trail_uniform_set == particles->trail_bind_pose_uniform_set && memcmp(particles->last_copy_push_constant, &copy_push_constant, sizeof(copy_push_constant)) == 0) {
+				continue;
+			}
+			particles->processed_since_copy = false;
+			particles->last_copy_uniform_set = particles->particles_copy_uniform_set;
+			particles->last_copy_trail_uniform_set = particles->trail_bind_pose_uniform_set;
+			memcpy(particles->last_copy_push_constant, &copy_push_constant, sizeof(copy_push_constant));
+
+			RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 			RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, particles_shader.copy_pipelines[particles->userdata_count][ParticlesShader::COPY_MODE_FILL_INSTANCES].get_rid());
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, particles->particles_copy_uniform_set, 0);
 			RD::get_singleton()->compute_list_bind_uniform_set(compute_list, particles->trail_bind_pose_uniform_set, 2);

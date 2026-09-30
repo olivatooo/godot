@@ -30,6 +30,8 @@
 
 #include "scene_tree.h"
 
+#include "core/templates/sort_array.h"
+
 STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 
 #include "core/config/engine.h"
@@ -1174,6 +1176,94 @@ bool SceneTree::is_suspended() const {
 	return suspended;
 }
 
+// Tree-order sort for a process group. Node::is_greater_than walks both parent chains (and
+// get_index) on every comparison; with hundreds of processing nodes and constant add/remove churn
+// that dominated frames. Each node's path of child indices is computed once instead, then compared
+// lexicographically (ancestor before descendant), which is the same order is_greater_than defines.
+static void _sort_process_nodes(Vector<Node *> &r_nodes, bool p_physics) {
+	struct Entry {
+		Node *node;
+		int priority;
+		uint32_t offset;
+		uint32_t length;
+	};
+	const uint32_t count = r_nodes.size();
+	LocalVector<Entry> entries;
+	entries.resize(count);
+	LocalVector<int> paths;
+	LocalVector<int> chain;
+	for (uint32_t i = 0; i < count; i++) {
+		Node *node = r_nodes[i];
+		chain.clear();
+		for (Node *n = node; n->get_parent(); n = n->get_parent()) {
+			chain.push_back(n->get_index());
+		}
+		Entry &e = entries[i];
+		e.node = node;
+		e.priority = p_physics ? node->get_physics_process_priority() : node->get_process_priority();
+		e.offset = paths.size();
+		e.length = chain.size();
+		for (int64_t j = int64_t(chain.size()) - 1; j >= 0; j--) {
+			paths.push_back(chain[j]);
+		}
+	}
+	const int *path_data = paths.ptr();
+	struct EntrySort {
+		const int *path_data = nullptr;
+		bool operator()(const Entry &p_a, const Entry &p_b) const {
+			if (p_a.priority != p_b.priority) {
+				return p_a.priority < p_b.priority;
+			}
+			const uint32_t shared = MIN(p_a.length, p_b.length);
+			const int *a = path_data + p_a.offset;
+			const int *b = path_data + p_b.offset;
+			for (uint32_t k = 0; k < shared; k++) {
+				if (a[k] != b[k]) {
+					return a[k] < b[k];
+				}
+			}
+			return p_a.length < p_b.length;
+		}
+	};
+	SortArray<Entry, EntrySort> sorter;
+	sorter.compare.path_data = path_data;
+	sorter.sort(entries.ptr(), count);
+	Node **dst = r_nodes.ptrw();
+	for (uint32_t i = 0; i < count; i++) {
+		dst[i] = entries[i].node;
+	}
+}
+
+// Nodes appended since the last sort sit after the sorted prefix. A few of them are binary-inserted
+// with Node::is_greater_than instead of re-sorting the whole group.
+static void _sort_process_nodes_tail(Vector<Node *> &r_nodes, uint32_t p_sorted, bool p_physics) {
+	const uint32_t count = r_nodes.size();
+	if (p_sorted == 0 || (count - p_sorted) * 8 > count) {
+		_sort_process_nodes(r_nodes, p_physics);
+		return;
+	}
+	Node **ptr = r_nodes.ptrw();
+	for (uint32_t i = p_sorted; i < count; i++) {
+		Node *node = ptr[i];
+		const int priority = p_physics ? node->get_physics_process_priority() : node->get_process_priority();
+		uint32_t lo = 0;
+		uint32_t hi = i;
+		while (lo < hi) {
+			const uint32_t mid = (lo + hi) / 2;
+			Node *other = ptr[mid];
+			const int other_priority = p_physics ? other->get_physics_process_priority() : other->get_process_priority();
+			const bool node_before = priority != other_priority ? priority < other_priority : other->is_greater_than(node);
+			if (node_before) {
+				hi = mid;
+			} else {
+				lo = mid + 1;
+			}
+		}
+		memmove(ptr + lo + 1, ptr + lo, (i - lo) * sizeof(Node *));
+		ptr[lo] = node;
+	}
+}
+
 void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
 	// When reading this function, keep in mind that this code must work in a way where
 	// if any node is removed, this needs to continue working.
@@ -1187,14 +1277,16 @@ void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
 
 	if (p_physics) {
 		if (p_group->physics_node_order_dirty) {
-			nodes.sort_custom<Node::ComparatorWithPhysicsPriority>();
+			_sort_process_nodes_tail(nodes, p_group->physics_nodes_sorted, true);
 			p_group->physics_node_order_dirty = false;
 		}
+		p_group->physics_nodes_sorted = nodes.size();
 	} else {
 		if (p_group->node_order_dirty) {
-			nodes.sort_custom<Node::ComparatorWithPriority>();
+			_sort_process_nodes_tail(nodes, p_group->nodes_sorted, false);
 			p_group->node_order_dirty = false;
 		}
+		p_group->nodes_sorted = nodes.size();
 	}
 
 	// Make a copy, so if nodes are added/removed from process, this does not break
@@ -1402,13 +1494,21 @@ void SceneTree::_remove_node_from_process_group(Node *p_node, Node *p_owner) {
 	ProcessGroup *pg = p_owner ? (ProcessGroup *)p_owner->data.process_group : &default_process_group;
 
 	if (p_node->is_processing() || p_node->is_processing_internal()) {
-		bool found = pg->nodes.erase(p_node);
-		ERR_FAIL_COND(!found);
+		const int64_t idx = pg->nodes.find(p_node);
+		ERR_FAIL_COND(idx < 0);
+		pg->nodes.remove_at(idx);
+		if (idx < int64_t(pg->nodes_sorted)) {
+			pg->nodes_sorted--;
+		}
 	}
 
 	if (p_node->is_physics_processing() || p_node->is_physics_processing_internal()) {
-		bool found = pg->physics_nodes.erase(p_node);
-		ERR_FAIL_COND(!found);
+		const int64_t idx = pg->physics_nodes.find(p_node);
+		ERR_FAIL_COND(idx < 0);
+		pg->physics_nodes.remove_at(idx);
+		if (idx < int64_t(pg->physics_nodes_sorted)) {
+			pg->physics_nodes_sorted--;
+		}
 	}
 }
 
