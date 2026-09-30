@@ -173,6 +173,22 @@ void BotMotor2D::_step(double p_delta) {
 			}
 		}
 
+		Viewport *vp = body->get_viewport();
+		if (vp != view_vp) {
+			view_vp = vp;
+			view_rect_valid = false;
+			Camera2D *cam = vp ? vp->get_camera_2d() : nullptr;
+			if (cam && cam->get_zoom().x > 0.0f && cam->get_zoom().y > 0.0f) {
+				const Vector2 size = vp->get_visible_rect().size / cam->get_zoom();
+				const Vector2 grown = size * (1.0f + 2.0f * view_margin);
+				view_rect = Rect2(cam->get_camera_screen_center() - grown * 0.5f, grown);
+				view_rect_valid = true;
+			}
+		}
+		const bool in_view = !view_rect_valid || view_rect.has_point(body->get_global_position());
+		if (!in_view) {
+			continue;
+		}
 		AnimatedSprite2D *sprite = Object::cast_to<AnimatedSprite2D>(body->get(SN_SPRITE).get_validated_object());
 		if (!sprite) {
 			continue;
@@ -211,21 +227,7 @@ void BotMotor2D::_step(double p_delta) {
 			continue;
 		}
 
-		Viewport *vp = body->get_viewport();
-		if (vp != view_vp) {
-			view_vp = vp;
-			view_rect_valid = false;
-			Camera2D *cam = vp ? vp->get_camera_2d() : nullptr;
-			if (cam && cam->get_zoom().x > 0.0f && cam->get_zoom().y > 0.0f) {
-				const Vector2 size = vp->get_visible_rect().size / cam->get_zoom();
-				const Vector2 grown = size * (1.0f + 2.0f * view_margin);
-				view_rect = Rect2(cam->get_camera_screen_center() - grown * 0.5f, grown);
-				view_rect_valid = true;
-			}
-		}
-		if (!view_rect_valid || view_rect.has_point(body->get_global_position())) {
-			body->call(SN_FOOTSTEPS);
-		}
+		body->call(SN_FOOTSTEPS);
 	}
 	active_count = active;
 	live_bots = active;
