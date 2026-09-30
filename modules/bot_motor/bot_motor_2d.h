@@ -166,6 +166,7 @@ public:
 	void register_composer(Node *p_composer);
 	void register_projectile(Node *p_projectile, Vector2 p_velocity, bool p_enabled);
 	Variant select_best_target(Node *p_composer);
+	bool has_clear_sight(Node *p_character, const Vector2 &p_from, const Vector2 &p_to);
 	void reset_composer(Node *p_composer);
 
 	// Bot wall-avoidance ray fan (MovementComponent._compute_wall_avoidance) without a script

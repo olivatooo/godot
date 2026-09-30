@@ -26,6 +26,7 @@ void BotMotor2D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("register_composer", "composer"), &BotMotor2D::register_composer);
 	ClassDB::bind_method(D_METHOD("register_projectile", "projectile", "velocity", "enabled"), &BotMotor2D::register_projectile);
 	ClassDB::bind_method(D_METHOD("select_best_target", "composer"), &BotMotor2D::select_best_target);
+	ClassDB::bind_method(D_METHOD("has_clear_sight", "character", "from", "to"), &BotMotor2D::has_clear_sight);
 	ClassDB::bind_method(D_METHOD("reset_composer", "composer"), &BotMotor2D::reset_composer);
 	ClassDB::bind_static_method("BotMotor2D", D_METHOD("wall_avoidance", "space", "exclude", "origin", "direction", "half_spread", "detect", "count", "mask", "push_strength", "max_length"), &BotMotor2D::wall_avoidance);
 }
@@ -740,8 +741,8 @@ void BotMotor2D::_tick_shots(double p_delta) {
 
 namespace {
 const uint32_t LOS_MASK = 0b11001000;
-const uint64_t LOS_CACHE_MS = 50;
-const float LOS_CACHE_GRID = 4.0f;
+const uint64_t LOS_CACHE_MS = 100;
+const float LOS_CACHE_GRID = 8.0f;
 const int MAX_SIGHT_CANDIDATES = 4;
 
 bool are_hostile(int a, int b) {
@@ -810,6 +811,11 @@ bool BotMotor2D::_has_clear_sight(Node2D *p_character, const Vector2 &p_from, co
 	const bool clear = !space->intersect_ray(params, result);
 	los_cache.insert(key, clear);
 	return clear;
+}
+
+bool BotMotor2D::has_clear_sight(Node *p_character, const Vector2 &p_from, const Vector2 &p_to) {
+	Node2D *character = Object::cast_to<Node2D>(p_character);
+	return character && _has_clear_sight(character, p_from, p_to);
 }
 
 Variant BotMotor2D::select_best_target(Node *p_composer) {
