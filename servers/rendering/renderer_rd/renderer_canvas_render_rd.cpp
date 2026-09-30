@@ -2404,6 +2404,16 @@ void RendererCanvasRenderRD::_record_item_commands(const Item *p_item, RenderTar
 			continue;
 		}
 
+		if (c->type == Item::Command::TYPE_PARTICLES) {
+			RendererRD::ParticlesStorage *idle_particles_storage = RendererRD::ParticlesStorage::get_singleton();
+			RID idle_particles = static_cast<const Item::CommandParticles *>(c)->particles;
+			if (idle_particles_storage->particles_is_inactive(idle_particles)) {
+				idle_particles_storage->particles_request_process(idle_particles);
+				c = c->next;
+				continue;
+			}
+		}
+
 		switch (c->type) {
 			case Item::Command::TYPE_RECT: {
 				const Item::CommandRect *rect = static_cast<const Item::CommandRect *>(c);
