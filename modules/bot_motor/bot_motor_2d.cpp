@@ -871,7 +871,7 @@ Variant BotMotor2D::select_best_target(Node *p_composer) {
 	LocalVector<ByDistance> by_distance;
 	for (Object *t : all) {
 		Node2D *n = Object::cast_to<Node2D>(t);
-		by_distance.push_back({ n ? origin.distance_squared_to(n->get_global_position()) : Math::INF, t });
+		by_distance.push_back({ n ? origin.distance_squared_to(n->get_global_position()) : float(Math::INF), t });
 	}
 	by_distance.sort();
 	Object *closest = nullptr;
