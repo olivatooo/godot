@@ -1,6 +1,7 @@
 #include "bot_motor_2d.h"
 
 #include "core/config/engine.h"
+#include "core/profiling/profiling.h"
 #include "core/object/class_db.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
@@ -84,6 +85,7 @@ void BotMotor2D::_notification(int p_what) {
 }
 
 void BotMotor2D::_step(double p_delta) {
+	GodotProfileZone("motor _step");
 	bool frozen = false;
 	bool slowmo_bots = true;
 	if (is_inside_tree()) {
@@ -229,6 +231,7 @@ void BotMotor2D::_step(double p_delta) {
 }
 
 Vector2 BotMotor2D::wall_avoidance(RID p_space, RID p_exclude, Vector2 p_origin, Vector2 p_direction, float p_half_spread, float p_detect, int p_count, uint32_t p_mask, float p_push_strength, float p_max_length) {
+	GodotProfileZone("motor wall_avoidance");
 	PhysicsDirectSpaceState2D *space = PhysicsServer2D::get_singleton()->space_get_direct_state(p_space);
 	ERR_FAIL_NULL_V(space, Vector2());
 	PhysicsDirectSpaceState2D::RayParameters params;
@@ -361,6 +364,7 @@ void BotMotor2D::_bind_movement(Brain &b, Object *p_movement) {
 }
 
 void BotMotor2D::_tick_brains(double p_delta) {
+	GodotProfileZone("motor _tick_brains");
 	if (!is_inside_tree()) {
 		return;
 	}
@@ -449,6 +453,7 @@ void BotMotor2D::_tick_brains(double p_delta) {
 }
 
 void BotMotor2D::_natural_move(Brain &b, Object *p_composer, Object *p_movement, float p_delta) {
+	GodotProfileZone("motor _natural_move");
 	Node2D *character = Object::cast_to<Node2D>(p_composer->get(SN_CHARACTER).get_validated_object());
 	Object *input = p_composer->get(SN_SCAV_INPUT);
 	NavigationAgent2D *nav = Object::cast_to<NavigationAgent2D>(p_composer->get(SN_NAVIGATION_AGENT).get_validated_object());
@@ -669,6 +674,7 @@ void BotMotor2D::register_projectile(Node *p_projectile, Vector2 p_velocity, boo
 }
 
 void BotMotor2D::_tick_shots(double p_delta) {
+	GodotProfileZone("motor _tick_shots");
 	if (shots.is_empty()) {
 		return;
 	}
@@ -771,6 +777,7 @@ Object *BotMotor2D::_fallback_target(const Array &p_targeting, int p_my_team) co
 }
 
 bool BotMotor2D::_has_clear_sight(Node2D *p_character, const Vector2 &p_from, const Vector2 &p_to) {
+	GodotProfileZone("motor _has_clear_sight");
 	const uint64_t now = OS::get_singleton()->get_ticks_msec();
 	if (now - los_cache_started_ms >= LOS_CACHE_MS) {
 		los_cache.clear();
@@ -806,6 +813,7 @@ bool BotMotor2D::_has_clear_sight(Node2D *p_character, const Vector2 &p_from, co
 }
 
 Variant BotMotor2D::select_best_target(Node *p_composer) {
+	GodotProfileZone("motor select_best_target");
 	ERR_FAIL_NULL_V(p_composer, Variant(false));
 	Node2D *character = Object::cast_to<Node2D>(p_composer->get(SN_CHARACTER).get_validated_object());
 	if (!character) {
