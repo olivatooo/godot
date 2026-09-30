@@ -3253,13 +3253,25 @@ void TileMapLayer::_hit_index_update_dirty(bool p_force_cleanup) {
 }
 
 void TileMapLayer::_hit_candidates_in_rect(const Rect2 &p_rect, HashSet<Vector2i> &r_owners) const {
-	if (tile_set.is_null()) {
+	if (tile_set.is_null() || !p_rect.is_finite()) {
 		return;
 	}
 	Vector2i from = tile_set->local_to_map(p_rect.position);
 	Vector2i to = tile_set->local_to_map(p_rect.get_end());
-	for (int y = MIN(from.y, to.y); y <= MAX(from.y, to.y); y++) {
-		for (int x = MIN(from.x, to.x); x <= MAX(from.x, to.x); x++) {
+	const Vector2i lo(MIN(from.x, to.x), MIN(from.y, to.y));
+	const Vector2i hi(MAX(from.x, to.x), MAX(from.y, to.y));
+	if ((int64_t(hi.x) - lo.x + 1) * (int64_t(hi.y) - lo.y + 1) > int64_t(hit_grid.size())) {
+		for (const KeyValue<Vector2i, LocalVector<Vector2i>> &E : hit_grid) {
+			if (E.key.x >= lo.x && E.key.x <= hi.x && E.key.y >= lo.y && E.key.y <= hi.y) {
+				for (const Vector2i &owner : E.value) {
+					r_owners.insert(owner);
+				}
+			}
+		}
+		return;
+	}
+	for (int y = lo.y; y <= hi.y; y++) {
+		for (int x = lo.x; x <= hi.x; x++) {
 			const LocalVector<Vector2i> *list = hit_grid.getptr(Vector2i(x, y));
 			if (!list) {
 				continue;
