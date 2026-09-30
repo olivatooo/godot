@@ -2220,7 +2220,7 @@ void TileMapLayer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_coords_for_body_rid", "body"), &TileMapLayer::get_coords_for_body_rid);
 	ClassDB::bind_method(D_METHOD("get_physics_cells_at_point", "local_point", "collision_mask"), &TileMapLayer::get_physics_cells_at_point);
 	ClassDB::bind_method(D_METHOD("get_physics_cells_along_segment", "local_from", "local_to", "collision_mask"), &TileMapLayer::get_physics_cells_along_segment);
-	ClassDB::bind_method(D_METHOD("get_physics_cells_in_circle", "local_center", "radius", "collision_mask"), &TileMapLayer::get_physics_cells_in_circle);
+	ClassDB::bind_method(D_METHOD("get_physics_cells_in_circle", "local_center", "radius", "collision_mask", "exclude"), &TileMapLayer::get_physics_cells_in_circle, DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("get_physics_cells_in_rect", "local_rect", "collision_mask"), &TileMapLayer::get_physics_cells_in_rect);
 #endif // PHYSICS_2D_DISABLED
 
@@ -3411,14 +3411,18 @@ TypedArray<Vector2i> TileMapLayer::get_physics_cells_in_rect(const Rect2 &p_loca
 	return result;
 }
 
-TypedArray<Vector2i> TileMapLayer::get_physics_cells_in_circle(const Vector2 &p_local_center, real_t p_radius, uint32_t p_collision_mask) {
+TypedArray<Vector2i> TileMapLayer::get_physics_cells_in_circle(const Vector2 &p_local_center, real_t p_radius, uint32_t p_collision_mask, const Dictionary &p_exclude) {
 	TypedArray<Vector2i> result;
 	_hit_index_ensure();
 	const Rect2 bounds = Rect2(p_local_center, Vector2()).grow(p_radius);
 	HashSet<Vector2i> owners;
 	_hit_candidates_in_rect(bounds, owners);
 	const real_t radius_sq = p_radius * p_radius;
+	const bool has_exclude = !p_exclude.is_empty();
 	for (const Vector2i &coords : owners) {
+		if (has_exclude && p_exclude.has(coords)) {
+			continue;
+		}
 		const HitOwner *owner = hit_owners.getptr(coords);
 		for (const HitPolygon &polygon : owner->polygons) {
 			if (!(polygon.collision_layer & p_collision_mask) || !polygon.aabb.intersects(bounds)) {

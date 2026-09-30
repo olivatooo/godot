@@ -609,7 +609,7 @@ public:
 	Vector2i get_coords_for_body_rid(RID p_physics_body) const; // For finding tiles from collision.
 	TypedArray<Vector2i> get_physics_cells_at_point(const Vector2 &p_local_point, uint32_t p_collision_mask);
 	TypedArray<Vector2i> get_physics_cells_along_segment(const Vector2 &p_local_from, const Vector2 &p_local_to, uint32_t p_collision_mask);
-	TypedArray<Vector2i> get_physics_cells_in_circle(const Vector2 &p_local_center, real_t p_radius, uint32_t p_collision_mask);
+	TypedArray<Vector2i> get_physics_cells_in_circle(const Vector2 &p_local_center, real_t p_radius, uint32_t p_collision_mask, const Dictionary &p_exclude = Dictionary());
 	TypedArray<Vector2i> get_physics_cells_in_rect(const Rect2 &p_local_rect, uint32_t p_collision_mask);
 #endif // PHYSICS_2D_DISABLED
 
