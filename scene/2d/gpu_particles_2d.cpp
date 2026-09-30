@@ -807,6 +807,10 @@ void GPUParticles2D::_notification(int p_what) {
 		case NOTIFICATION_INTERNAL_PHYSICS_PROCESS: {
 			// Update velocity in physics process, so that velocity calculations remain correct
 			// if the physics tick rate is lower than the rendered framerate (especially without physics interpolation).
+			if (!is_emitting()) {
+				previous_position = get_global_position();
+				break;
+			}
 			const Vector3 velocity = Vector3((get_global_position() - previous_position).x, (get_global_position() - previous_position).y, 0.0) /
 					get_physics_process_delta_time();
 
