@@ -1,0 +1,144 @@
+name: Build editor
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}|${{ github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  SCONS_FLAGS: >-
+    target=editor
+    production=yes
+    lto=none
+    debug_symbols=no
+  PYTHONIOENCODING: utf8
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install libwayland-bin
+
+      - uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: linux-editor
+        continue-on-error: true
+
+      - uses: ./.github/actions/godot-deps
+
+      - uses: ./.github/actions/godot-build
+        with:
+          platform: linuxbsd
+          scons-flags: ${{ env.SCONS_FLAGS }}
+
+      - uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: linux-editor
+        continue-on-error: true
+
+      - name: Package
+        run: tar -C bin -cJf godot-editor-linux-x86_64.tar.xz godot.linuxbsd.editor.x86_64
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: godot-editor-linux-x86_64
+          path: godot-editor-linux-x86_64.tar.xz
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/godot-cache-restore
+        with:
+          cache-name: windows-editor
+        continue-on-error: true
+
+      - uses: ./.github/actions/godot-deps
+
+      - name: Download Direct3D 12 SDK components
+        shell: sh
+        id: d3d12-sdk
+        run: |
+          if python ./misc/scripts/install_d3d12_sdk_windows.py; then
+            echo "D3D12_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "D3D12_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+        continue-on-error: true
+
+      - name: Download pre-built ANGLE
+        shell: sh
+        id: angle-sdk
+        run: |
+          if python ./misc/scripts/install_angle.py; then
+            echo "ANGLE_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "ANGLE_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download WinRT components
+        shell: sh
+        run: python ./misc/scripts/install_winrt.py
+        continue-on-error: true
+
+      - name: Download pre-built AccessKit
+        shell: sh
+        id: accesskit-sdk
+        run: |
+          if python ./misc/scripts/install_accesskit.py; then
+            echo "ACCESSKIT_ENABLED=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "ACCESSKIT_ENABLED=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: ./.github/actions/godot-build
+        with:
+          platform: windows
+          scons-flags: ${{ env.SCONS_FLAGS }} d3d12=${{ steps.d3d12-sdk.outputs.D3D12_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }}
+
+      - uses: ./.github/actions/godot-cache-save
+        with:
+          cache-name: windows-editor
+        continue-on-error: true
+
+      - name: Package
+        run: |
+          Remove-Item bin/build_deps -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item bin/* -Include *.exp,*.lib,*.pdb -Force
+          Compress-Archive -Path bin/* -DestinationPath godot-editor-windows-x86_64.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: godot-editor-windows-x86_64
+          path: godot-editor-windows-x86_64.zip
+
+  release:
+    if: github.ref_name == github.event.repository.default_branch
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest --target "$GITHUB_SHA" --latest \
+            --title "Editor $(date -u +%Y-%m-%d) (${GITHUB_SHA::7})" --notes "" \
+            godot-editor-linux-x86_64.tar.xz godot-editor-windows-x86_64.zip
